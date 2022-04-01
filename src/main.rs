@@ -11,6 +11,9 @@ struct Movement {
     speed_scale: f32,
 }
 
+#[derive(Component)]
+struct Brick {}
+
 #[derive(Component, PartialEq, Eq)]
 enum Collider {
     Solid,
@@ -24,10 +27,11 @@ fn main() {
         .add_plugin(AnimationPlugin::default())
         .add_startup_system_to_stage(StartupStage::PreStartup, setup_animations)
         .add_startup_system(initial_setup)
-        .add_system(input_handling)
-        .add_system(movement_system)
-        .add_system(box_collision_system)
+        .add_system(input_handling.after("move"))
+        .add_system(movement_system.label("move"))
+        .add_system(box_collision_system.before("move"))
         .add_system(animate_sprite_system)
+        .add_system(brick_collision_system)
         .run();
 }
 
@@ -84,7 +88,13 @@ fn initial_setup(
             texture: box_handle,
             ..Default::default()
         })
-        .insert(Collider::Push);
+        .insert(Collider::Push)
+        .insert(Movement {
+            velocity: Vec3::new(0.0, 0.0, 0.0),
+            location: Vec3::new(0.0, 0.0, 0.0),
+            is_left: false,
+            speed_scale: 70.0,
+        });
 
     for n in 1..6 {
         commands
@@ -100,11 +110,15 @@ fn initial_setup(
                 },
                 ..Default::default()
             })
-            .insert(Collider::Solid);
+            .insert(Collider::Solid)
+            .insert(Brick {});
     }
 }
 
-fn input_handling(keys: Res<Input<KeyCode>>, mut move_q: Query<&mut Movement>) {
+fn input_handling(
+    keys: Res<Input<KeyCode>>,
+    mut move_q: Query<&mut Movement, With<TextureAtlasSprite>>,
+) {
     let mut movement = move_q.single_mut();
 
     movement.velocity = Vec3::ZERO;
@@ -122,7 +136,7 @@ fn input_handling(keys: Res<Input<KeyCode>>, mut move_q: Query<&mut Movement>) {
 
 fn animate_sprite_system(
     animations: Res<Animations>,
-    mut move_q: Query<&mut Movement>,
+    mut move_q: Query<&mut Movement, With<TextureAtlasSprite>>,
     mut query: Query<&mut Handle<SpriteSheetAnimation>>,
     mut sprite_q: Query<&mut TextureAtlasSprite>,
 ) {
@@ -148,25 +162,25 @@ fn animate_sprite_system(
     }
 }
 
-fn movement_system(mut player_q: Query<(&mut Movement, &mut Transform)>, time: Res<Time>) {
-    let (mut movement, mut transform) = player_q.single_mut();
-
-    if movement.velocity != Vec3::ZERO {
-        let velocity = movement.velocity.normalize();
-        let speed_scale = movement.speed_scale;
-        movement.location += velocity * speed_scale * time.delta_seconds();
+fn movement_system(mut moveable_q: Query<(&mut Movement, &mut Transform)>, time: Res<Time>) {
+    for (mut movement, mut transform) in moveable_q.iter_mut() {
+        if movement.velocity != Vec3::ZERO {
+            let velocity = movement.velocity.normalize();
+            let speed_scale = movement.speed_scale;
+            movement.location += velocity * speed_scale * time.delta_seconds();
+        }
+        transform.translation = movement.location;
     }
-    transform.translation = movement.location;
 }
 
 fn box_collision_system(
     mut player_q: Query<(&Transform, &TextureAtlasSprite, &mut Movement), Without<Collider>>,
-    mut collider_q: Query<(&mut Transform, &Sprite, &Collider), With<Collider>>,
+    mut collider_q: Query<(&mut Movement, &Transform, &Sprite, &Collider), With<Movement>>,
 ) {
     let (player_transform, player_sprite, mut player_movement) = player_q.single_mut();
     let player_size = player_sprite.custom_size.unwrap_or(Vec2::new(41.6, 51.2));
 
-    for (mut transform, sprite, collider) in collider_q.iter_mut() {
+    for (mut movement, transform, sprite, collider) in collider_q.iter_mut() {
         let collision = collide(
             player_transform.translation,
             player_size,
@@ -179,70 +193,98 @@ fn box_collision_system(
                     Collision::Left => {
                         if player_movement.velocity.x > 0.0 {
                             player_movement.speed_scale = 70.0;
-                            transform.translation.x += 1.0;
+                            movement.velocity.x = 1.0;
                         } else {
                             player_movement.speed_scale = 155.0;
+                            movement.velocity.x = 0.0;
                         }
                     }
                     Collision::Right => {
                         if player_movement.velocity.x < 0.0 {
                             player_movement.speed_scale = 70.0;
-                            transform.translation.x += -1.0;
+                            movement.velocity.x = -1.0;
                         } else {
                             player_movement.speed_scale = 155.0;
+                            movement.velocity.x = 0.0;
                         }
                     }
                     Collision::Top => {
                         if player_movement.velocity.y < 0.0 {
                             player_movement.speed_scale = 70.0;
-                            transform.translation.y += -1.0;
+                            movement.velocity.y = -1.0
                         } else {
                             player_movement.speed_scale = 155.0;
+                            movement.velocity.y = 0.0;
                         }
                     }
                     Collision::Bottom => {
                         if player_movement.velocity.y > 0.0 {
                             player_movement.speed_scale = 70.0;
-                            transform.translation.y += 1.0;
+                            movement.velocity.y = 1.0;
                         } else {
                             player_movement.speed_scale = 155.0;
+                            movement.velocity.y = 0.0;
                         }
                     }
                 };
             } else {
                 player_movement.speed_scale = 155.0;
+                movement.velocity = Vec3::ZERO;
             }
-        } else if let Some(collision) = collision {
-            match collision {
-                Collision::Left => {
-                    if player_movement.velocity.x > 0.0 {
-                        player_movement.velocity.x = 0.0;
-                    } else {
-                        player_movement.speed_scale = 155.0;
-                    }
-                }
-                Collision::Right => {
-                    if player_movement.velocity.x < 0.0 {
-                        player_movement.velocity.x = 0.0;
-                    } else {
-                        player_movement.speed_scale = 155.0;
-                    }
-                }
-                Collision::Top => {
-                    if player_movement.velocity.y < 0.0 {
-                        player_movement.velocity.y = 0.0;
-                    } else {
-                        player_movement.speed_scale = 155.0;
-                    }
-                }
-                Collision::Bottom => {
-                    if player_movement.velocity.y > 0.0 {
-                        player_movement.velocity.y = 0.0;
-                    } else {
-                        player_movement.speed_scale = 155.0;
-                    }
-                }
+        }
+    }
+}
+
+fn brick_collision_system(
+    mut moveable_q: Query<(&Transform, &Sprite, &mut Movement), With<Movement>>,
+    brick_q: Query<(&Transform, &Sprite, &Collider), With<Brick>>,
+) {
+        for (transform, sprite, mut movement) in moveable_q.iter_mut() {
+            let size = match sprite.custom_size {
+                Some(dimension) => dimension,
+                None => return,
             };
+    
+    for (brick_transform, brick_sprite, collider) in brick_q.iter() {
+            let collision = collide(
+                transform.translation,
+                size,
+                brick_transform.translation,
+                brick_sprite
+                    .custom_size
+                    .unwrap_or(Vec2::new(1300.0 * 0.05, 1300.0 * 0.05)),
+            );
+
+            if let Some(collision) = collision {
+                match collision {
+                    Collision::Left => {
+                        println!("collided left");
+                        if movement.velocity.x > 0.0 {
+                            movement.velocity.x = 0.0;
+                            println!("Stopped moving left")
+                        } else {
+                        }
+                    }
+                    Collision::Right => {
+                        if movement.velocity.x < 0.0 {
+                            movement.velocity.x = 0.0;
+                        } else {
+                        }
+                    }
+                    Collision::Top => {
+                        if movement.velocity.y < 0.0 {
+                            movement.velocity.y = 0.0;
+                        } else {
+                        }
+                    }
+                    Collision::Bottom => {
+                        if movement.velocity.y > 0.0 {
+                            movement.velocity.y = 0.0;
+                        } else {
+                        }
+                    }
+                }
+            }
         }
     }
 }
