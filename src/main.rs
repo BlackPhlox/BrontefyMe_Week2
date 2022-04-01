@@ -1,18 +1,20 @@
-use std::{time::Duration, ops::Deref};
-use benimator::{Play, SpriteSheetAnimation, AnimationPlugin};
+use benimator::{AnimationPlugin, Play, SpriteSheetAnimation};
 use bevy::prelude::*;
 use bevy::sprite::collide_aabb::{collide, Collision};
+use std::{ops::Deref, time::Duration};
 
 #[derive(Component)]
 struct Movement {
     location: Vec3,
     velocity: Vec3,
     is_left: bool,
+    speed_scale: f32,
 }
 
-#[derive(Component)]
+#[derive(Component, PartialEq, Eq)]
 enum Collider {
     Solid,
+    Push,
 }
 
 fn main() {
@@ -35,7 +37,7 @@ struct Animations {
     moving: Handle<SpriteSheetAnimation>,
 }
 
-fn setup_animations (
+fn setup_animations(
     mut handles: ResMut<Animations>,
     mut assets: ResMut<Assets<SpriteSheetAnimation>>,
 ) {
@@ -68,9 +70,10 @@ fn initial_setup(
             ..Default::default()
         })
         .insert(Movement {
-            location: Vec3::from_slice(&[-50.,0.,0.]),
+            location: Vec3::from_slice(&[-50., 0., 0.]),
             velocity: Vec3::ZERO,
             is_left: false,
+            speed_scale: 125.0,
         })
         .insert(anim.idle.clone())
         .insert(Play);
@@ -81,7 +84,24 @@ fn initial_setup(
             texture: box_handle,
             ..Default::default()
         })
-        .insert(Collider::Solid);
+        .insert(Collider::Push);
+
+    for n in 1..6 {
+        commands
+            .spawn_bundle(SpriteBundle {
+                sprite: Sprite {
+                    custom_size: Some(Vec2::new(1300.0 * 0.05, 1300.0 * 0.05)),
+                    ..Default::default()
+                },
+                texture: server.load("brick.png"),
+                transform: Transform {
+                    translation: Vec3::new(-200.0, -n as f32 * 65.0, 0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .insert(Collider::Solid);
+    }
 }
 
 fn input_handling(keys: Res<Input<KeyCode>>, mut move_q: Query<&mut Movement>) {
@@ -105,7 +125,7 @@ fn animate_sprite_system(
     mut move_q: Query<&mut Movement>,
     mut query: Query<&mut Handle<SpriteSheetAnimation>>,
     mut sprite_q: Query<&mut TextureAtlasSprite>,
-){
+) {
     let mut movement = move_q.single_mut();
     let mut animation = query.single_mut();
 
@@ -120,54 +140,108 @@ fn animate_sprite_system(
         Ok(mut x) => x.flip_x = movement.is_left,
         Err(_) => println!("Oh no! Couldn't find hero sprite"),
     }
-    
-    if movement.velocity.eq(&Vec3::ZERO){
+
+    if movement.velocity.eq(&Vec3::ZERO) {
         *animation = animations.idle.clone();
     } else {
         *animation = animations.moving.clone();
-    }    
+    }
 }
-
 
 fn movement_system(mut player_q: Query<(&mut Movement, &mut Transform)>, time: Res<Time>) {
     let (mut movement, mut transform) = player_q.single_mut();
-    
+
     if movement.velocity != Vec3::ZERO {
         let velocity = movement.velocity.normalize();
-        let speed_scale = 125.0;
+        let speed_scale = movement.speed_scale;
         movement.location += velocity * speed_scale * time.delta_seconds();
     }
     transform.translation = movement.location;
 }
 
 fn box_collision_system(
-    mut player_q: Query<(&Transform, &TextureAtlasSprite, &mut Movement)>,
-    collider_q: Query<(&Transform, &Sprite), With<Collider>>,
+    mut player_q: Query<(&Transform, &TextureAtlasSprite, &mut Movement), Without<Collider>>,
+    mut collider_q: Query<(&mut Transform, &Sprite, &Collider), With<Collider>>,
 ) {
     let (player_transform, player_sprite, mut player_movement) = player_q.single_mut();
     let player_size = player_sprite.custom_size.unwrap_or(Vec2::new(41.6, 51.2));
 
-    for (transform, sprite) in collider_q.iter() {
+    for (mut transform, sprite, collider) in collider_q.iter_mut() {
         let collision = collide(
             player_transform.translation,
             player_size,
             transform.translation,
-            sprite.custom_size.unwrap_or(Vec2::new(41.0,42.0)),
+            sprite.custom_size.unwrap_or(Vec2::new(41.0, 42.0)),
         );
-        if let Some(collision) = collision {
+        if let Collider::Push = collider {
+            if let Some(collision) = collision {
+                match collision {
+                    Collision::Left => {
+                        if player_movement.velocity.x > 0.0 {
+                            player_movement.speed_scale = 70.0;
+                            transform.translation.x += 1.0;
+                        } else {
+                            player_movement.speed_scale = 155.0;
+                        }
+                    }
+                    Collision::Right => {
+                        if player_movement.velocity.x < 0.0 {
+                            player_movement.speed_scale = 70.0;
+                            transform.translation.x += -1.0;
+                        } else {
+                            player_movement.speed_scale = 155.0;
+                        }
+                    }
+                    Collision::Top => {
+                        if player_movement.velocity.y < 0.0 {
+                            player_movement.speed_scale = 70.0;
+                            transform.translation.y += -1.0;
+                        } else {
+                            player_movement.speed_scale = 155.0;
+                        }
+                    }
+                    Collision::Bottom => {
+                        if player_movement.velocity.y > 0.0 {
+                            player_movement.speed_scale = 70.0;
+                            transform.translation.y += 1.0;
+                        } else {
+                            player_movement.speed_scale = 155.0;
+                        }
+                    }
+                };
+            } else {
+                player_movement.speed_scale = 155.0;
+            }
+        } else if let Some(collision) = collision {
             match collision {
-                Collision::Left  => {if player_movement.velocity.x > 0.0 {
-                    player_movement.velocity.x = 0.0;
-                }},
-                Collision::Right => {if player_movement.velocity.x < 0.0 {
-                    player_movement.velocity.x = 0.0;
-                }},
-                Collision::Top => { if player_movement.velocity.y < 0.0 {
-                    player_movement.velocity.y = 0.0;
-                }},
-                Collision::Bottom => { if player_movement.velocity.y > 0.0 {
-                    player_movement.velocity.y = 0.0; 
-                }},
+                Collision::Left => {
+                    if player_movement.velocity.x > 0.0 {
+                        player_movement.velocity.x = 0.0;
+                    } else {
+                        player_movement.speed_scale = 155.0;
+                    }
+                }
+                Collision::Right => {
+                    if player_movement.velocity.x < 0.0 {
+                        player_movement.velocity.x = 0.0;
+                    } else {
+                        player_movement.speed_scale = 155.0;
+                    }
+                }
+                Collision::Top => {
+                    if player_movement.velocity.y < 0.0 {
+                        player_movement.velocity.y = 0.0;
+                    } else {
+                        player_movement.speed_scale = 155.0;
+                    }
+                }
+                Collision::Bottom => {
+                    if player_movement.velocity.y > 0.0 {
+                        player_movement.velocity.y = 0.0;
+                    } else {
+                        player_movement.speed_scale = 155.0;
+                    }
+                }
             };
         }
     }
