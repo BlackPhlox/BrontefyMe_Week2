@@ -1,7 +1,6 @@
-use benimator::{AnimationPlugin, Play, SpriteSheetAnimation};
+use benimator::FrameRate;
 use bevy::prelude::*;
 use bevy::sprite::collide_aabb::{collide, Collision};
-use std::{ops::Deref, time::Duration};
 
 #[derive(Component)]
 struct Movement {
@@ -11,8 +10,12 @@ struct Movement {
     speed_scale: f32,
 }
 
+// Create the player component
+#[derive(Default, Component, Deref, DerefMut)]
+struct AnimationState(benimator::State);
+
 #[derive(Component)]
-struct Brick {}
+struct Wall {}
 
 #[derive(Component, PartialEq, Eq)]
 enum Collider {
@@ -22,53 +25,48 @@ enum Collider {
 
 fn main() {
     App::new()
-        .init_resource::<Animations>()
-        .add_plugins(DefaultPlugins)
-        .add_plugin(AnimationPlugin::default())
-        .add_startup_system_to_stage(StartupStage::PreStartup, setup_animations)
-        .add_startup_system(initial_setup)
-        .add_system(input_handling.after("move"))
-        .add_system(movement_system.label("move"))
-        .add_system(box_collision_system.before("move"))
-        .add_system(animate_sprite_system)
-        .add_system(brick_collision_system)
+        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
+        .add_systems(Startup, initial_setup)
+        .add_systems(Update, input_handling)
+        .add_systems(Update, movement_system)
+        .add_systems(Update, box_collision_system)
+        .add_systems(Update, animate_sprite_system)
+        .add_systems(Update, brick_collision_system)
         .run();
 }
+/*
+Important system ordering:
 
-#[derive(Default)]
-struct Animations {
-    idle: Handle<SpriteSheetAnimation>,
-    moving: Handle<SpriteSheetAnimation>,
-}
+1. box_collision_system
+2. movement_system
+3. input_handling
 
-fn setup_animations(
-    mut handles: ResMut<Animations>,
-    mut assets: ResMut<Assets<SpriteSheetAnimation>>,
-) {
-    handles.idle = assets.add(SpriteSheetAnimation::from_range(
-        0..=3,
-        Duration::from_millis(150),
-    ));
-    handles.moving = assets.add(SpriteSheetAnimation::from_range(
-        6..=9,
-        Duration::from_millis(150),
-    ));
+*/
+
+#[derive(Component)]
+struct Animation {
+    idle: benimator::Animation,
+    run: benimator::Animation,
 }
 
 fn initial_setup(
     mut commands: Commands,
     server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
-    mut animations: ResMut<Assets<SpriteSheetAnimation>>,
-    anim: Res<Animations>,
 ) {
-    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
+    commands.spawn(Camera2dBundle::default());
 
-    let texture_handle = server.load("hero.png");
-    let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(16.0, 16.0), 6, 5);
+    let idle_anim = Animation {
+        idle: benimator::Animation::from_indices(0..=3, FrameRate::from_fps(6.)),
+        run: benimator::Animation::from_indices(6..=9, FrameRate::from_fps(6.)),
+    };
+
+    let texture_handle = server.load("ryan.png");
+    let texture_atlas =
+        TextureAtlas::from_grid(texture_handle, Vec2::new(16.0, 16.0), 6, 5, None, None);
     let texture_atlas_handle = texture_atlases.add(texture_atlas);
     commands
-        .spawn_bundle(SpriteSheetBundle {
+        .spawn(SpriteSheetBundle {
             texture_atlas: texture_atlas_handle,
             transform: Transform::from_scale(Vec3::splat(2.5)),
             ..Default::default()
@@ -79,12 +77,12 @@ fn initial_setup(
             is_left: false,
             speed_scale: 125.0,
         })
-        .insert(anim.idle.clone())
-        .insert(Play);
+        .insert(idle_anim)
+        .insert(AnimationState::default());
 
-    let box_handle = server.load("mbox.png");
+    let box_handle = server.load("crate.png");
     commands
-        .spawn_bundle(SpriteBundle {
+        .spawn(SpriteBundle {
             texture: box_handle,
             ..Default::default()
         })
@@ -98,12 +96,12 @@ fn initial_setup(
 
     for n in 1..6 {
         commands
-            .spawn_bundle(SpriteBundle {
+            .spawn(SpriteBundle {
                 sprite: Sprite {
                     custom_size: Some(Vec2::new(1300.0 * 0.05, 1300.0 * 0.05)),
                     ..Default::default()
                 },
-                texture: server.load("brick.png"),
+                texture: server.load("wall.png"),
                 transform: Transform {
                     translation: Vec3::new(-200.0, -n as f32 * 65.0, 0.0),
                     ..Default::default()
@@ -111,7 +109,7 @@ fn initial_setup(
                 ..Default::default()
             })
             .insert(Collider::Solid)
-            .insert(Brick {});
+            .insert(Wall {});
     }
 }
 
@@ -135,30 +133,33 @@ fn input_handling(
 }
 
 fn animate_sprite_system(
-    animations: Res<Animations>,
-    mut move_q: Query<&mut Movement, With<TextureAtlasSprite>>,
-    mut query: Query<&mut Handle<SpriteSheetAnimation>>,
-    mut sprite_q: Query<&mut TextureAtlasSprite>,
+    time: Res<Time>,
+    mut query: Query<(
+        &mut Movement,
+        &mut AnimationState,
+        &mut TextureAtlasSprite,
+        &Animation,
+    )>,
 ) {
-    let mut movement = move_q.single_mut();
-    let mut animation = query.single_mut();
+    for (mut movement, mut player, mut texture, animation) in query.iter_mut() {
+        // Update the state
 
-    if movement.velocity.x < -0.1 {
-        movement.is_left = true;
-    } else if movement.velocity.x > 0.1 {
-        movement.is_left = false;
-    }
+        if movement.velocity.x < -0.1 {
+            movement.is_left = true;
+        } else if movement.velocity.x > 0.1 {
+            movement.is_left = false;
+        }
 
-    let sprite_atlas = sprite_q.get_single_mut();
-    match sprite_atlas {
-        Ok(mut x) => x.flip_x = movement.is_left,
-        Err(_) => println!("Oh no! Couldn't find hero sprite"),
-    }
+        texture.flip_x = movement.is_left;
 
-    if movement.velocity.eq(&Vec3::ZERO) {
-        *animation = animations.idle.clone();
-    } else {
-        *animation = animations.moving.clone();
+        if movement.velocity.eq(&Vec3::ZERO) {
+            player.update(&animation.idle, time.delta());
+        } else {
+            player.update(&animation.run, time.delta());
+        }
+
+        // Update the texture atlas
+        texture.index = player.frame_index();
     }
 }
 
@@ -226,6 +227,7 @@ fn box_collision_system(
                             movement.velocity.y = 0.0;
                         }
                     }
+                    Collision::Inside => (),
                 };
             } else {
                 player_movement.speed_scale = 155.0;
@@ -237,15 +239,15 @@ fn box_collision_system(
 
 fn brick_collision_system(
     mut moveable_q: Query<(&Transform, &Sprite, &mut Movement), With<Movement>>,
-    brick_q: Query<(&Transform, &Sprite, &Collider), With<Brick>>,
+    brick_q: Query<(&Transform, &Sprite), With<Wall>>,
 ) {
-        for (transform, sprite, mut movement) in moveable_q.iter_mut() {
-            let size = match sprite.custom_size {
-                Some(dimension) => dimension,
-                None => return,
-            };
-    
-    for (brick_transform, brick_sprite, collider) in brick_q.iter() {
+    for (transform, sprite, mut movement) in moveable_q.iter_mut() {
+        let size = match sprite.custom_size {
+            Some(dimension) => dimension,
+            None => return,
+        };
+
+        for (brick_transform, brick_sprite) in brick_q.iter() {
             let collision = collide(
                 transform.translation,
                 size,
@@ -258,10 +260,8 @@ fn brick_collision_system(
             if let Some(collision) = collision {
                 match collision {
                     Collision::Left => {
-                        println!("collided left");
                         if movement.velocity.x > 0.0 {
                             movement.velocity.x = 0.0;
-                            println!("Stopped moving left")
                         } else {
                         }
                     }
@@ -283,6 +283,7 @@ fn brick_collision_system(
                         } else {
                         }
                     }
+                    Collision::Inside => (),
                 }
             }
         }
